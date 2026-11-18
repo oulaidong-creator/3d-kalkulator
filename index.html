@@ -1,0 +1,1378 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SliceQuote – 3D-Druck Sofortkalkulator</title>
+  <meta name="description" content="Laden Sie Ihre STL-Datei hoch und erhalten Sie in Sekunden eine 3D-Vorschau, Bauraumprüfung und einen sofortigen Richtpreis für Ihren 3D-Druck." />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <style>
+    :root {
+      --brand: #2563eb;
+      --brand-hover: #1d4ed8;
+      --brand-soft: rgba(37, 99, 235, 0.12);
+    }
+    body {
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: #0f172a;
+      color: #f8fafc;
+    }
+    .brand-bg { background-color: var(--brand); }
+    .brand-bg:hover { background-color: var(--brand-hover); }
+    .brand-text { color: var(--brand); }
+    .brand-border { border-color: var(--brand); }
+    .brand-soft-bg { background-color: var(--brand-soft); }
+    input[type="range"] {
+      accent-color: var(--brand);
+    }
+    .custom-scrollbar::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-track {
+      background: #1e293b;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+      background: #475569;
+      border-radius: 3px;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col selection:bg-blue-500 selection:text-white">
+
+  <script>
+    /**
+     * =========================================================================
+     * ZENTRALE SHOP-KONFIGURATION (Hier Preise, Branding & Kontaktdaten pflegen)
+     * =========================================================================
+     */
+    const WIDGET_CONFIG = {
+      shopName: "Muster 3D-Drucktechnik",
+      tagline: "Industrieller FDM- & Prototypen-Service",
+      accentColor: "#2563eb", // Hex-Farbcode des Shops
+      contactEmail: "anfragen@dein-3d-shop.de",
+      web3formsKey: "", // Optional: Kostenlosen Key von web3forms.com eintragen für direkten Versand ohne Mail-Client
+      proMode: false, // true = blendet "Powered by SliceQuote" im Footer aus
+
+      // Bauraum-Limits in Millimetern (X, Y, Z)
+      buildVolume: { x: 256, y: 256, z: 256 },
+
+      // Kalkulations-Parameter (Netto-Werte in EUR)
+      setupFee: 6.50,          // Einmalige Rüstpauschale pro Position (Slicing, Bettvorbereitung, Verpackung)
+      minOrderValue: 12.00,    // Mindestauftragswert pro Position
+      machineRatePerHour: 4.80,// Maschinenstundensatz (Strom, Verschleiß, Abschreibung)
+      wallShare: 0.35,         // Anteil massiver Außenwände/Deckschichten (35 %)
+      wasteFactor: 1.15,       // +15 % Materialaufschlag für Purge-Line, Skirt & Ausschuss
+      supportCostFactor: 0.22, // +22 % Material & Zeit bei aktivierten Stützstrukturen
+      vatRate: 0.19,           // 19 % MwSt. für Brutto-Ansicht
+
+      // Verfügbare Materialien
+      materials: [
+        {
+          id: "pla",
+          name: "PLA Tough",
+          subtitle: "Standard für Prototypen & Anschauungsmodelle",
+          density: 1.24,      // g/cm³
+          pricePerKg: 38.00,  // Verkaufspreis pro kg Material in EUR
+          speedFactor: 1.00
+        },
+        {
+          id: "petg",
+          name: "PETG Industrial",
+          subtitle: "Zäh, schlagfest & feuchtigkeitsbeständig",
+          density: 1.27,
+          pricePerKg: 46.00,
+          speedFactor: 0.90
+        },
+        {
+          id: "asa",
+          name: "ASA UV-Stabil",
+          subtitle: "Hitzebeständig bis 95 °C & witterungsfest",
+          density: 1.07,
+          pricePerKg: 58.00,
+          speedFactor: 0.82
+        },
+        {
+          id: "tpu",
+          name: "TPU 95A Flex",
+          subtitle: "Elastisch für Dichtungen, Puffer & Greifer",
+          density: 1.21,
+          pricePerKg: 64.00,
+          speedFactor: 0.65
+        }
+      ],
+
+      // Schichthöhen & effektive Flussraten (cm³/h)
+      qualities: [
+        { id: "draft", label: "0,28 mm (Entwurf – schnell)", flowCm3PerHour: 22.0 },
+        { id: "standard", label: "0,20 mm (Standard – ausgewogen)", flowCm3PerHour: 15.5 },
+        { id: "fine", label: "0,12 mm (Fein – hohe Oberflächengüte)", flowCm3PerHour: 9.0 }
+      ],
+
+      // Filament-Farben für die 3D-Vorschau
+      colors: [
+        { id: "black", name: "Tiefschwarz", hex: "#1e293b" },
+        { id: "white", name: "Signalweiß", hex: "#f1f5f9" },
+        { id: "gray", name: "Industriegrau", hex: "#64748b" },
+        { id: "blue", name: "Kobaltblau", hex: "#2563eb" },
+        { id: "orange", name: "Signalorange", hex: "#f97316" },
+        { id: "red", name: "Karminrot", hex: "#dc2626" }
+      ],
+
+      // Mengenrabatt-Staffel (auf Stückpreis vor Rüstpauschale)
+      quantityDiscounts: [
+        { minQty: 25, discount: 0.25, label: "-25 % ab 25 Stk." },
+        { minQty: 10, discount: 0.18, label: "-18 % ab 10 Stk." },
+        { minQty: 5,  discount: 0.10, label: "-10 % ab 5 Stk." },
+        { minQty: 1,  discount: 0.00, label: "Einzelfertigung" }
+      ],
+
+      // Rechtliche Angaben für das Footer-Modal
+      legal: {
+        company: "Muster 3D-Drucktechnik",
+        owner: "Vorname Nachname",
+        street: "Musterstraße 12",
+        city: "52062 Aachen",
+        email: "anfragen@dein-3d-shop.de"
+      }
+    };
+  </script>
+
+  <!-- HEADER -->
+  <header class="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-30">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
+      <div class="flex items-center gap-3 min-w-0">
+        <div id="shopLogoBadge" class="w-10 h-10 rounded-xl brand-bg flex items-center justify-center font-bold text-white shadow-lg shrink-0">
+          3D
+        </div>
+        <div class="truncate">
+          <h1 id="headerShopName" class="font-bold text-base sm:text-lg text-white truncate">Muster 3D-Drucktechnik</h1>
+          <p id="headerTagline" class="text-xs text-slate-400 truncate">Industrieller FDM- & Prototypen-Service</p>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-2 sm:gap-3 shrink-0">
+        <div class="hidden md:flex items-center gap-1.5 text-xs text-slate-400 bg-slate-800/80 border border-slate-700 px-3 py-1.5 rounded-lg">
+          <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+          <span id="buildVolumeBadge">Bauraum: 256 × 256 × 256 mm</span>
+        </div>
+
+        <button onclick="openDemoModal()" class="text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3 py-2 rounded-lg transition flex items-center gap-1.5">
+          <svg class="w-4 h-4 brand-text" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/></svg>
+          <span class="hidden sm:inline">Shop-Demo anpassen</span>
+          <span class="sm:hidden">Demo</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- MAIN CONTENT -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+    <!-- LINKE SPALTE: UPLOAD, 3D VIEWER & GEOMETRIE-ANALYSE -->
+    <div class="lg:col-span-7 flex flex-col gap-5">
+
+      <!-- Upload / Dropzone -->
+      <div id="dropZone" class="border-2 border-dashed border-slate-700 hover:border-slate-500 bg-slate-900/60 rounded-2xl p-5 transition cursor-pointer relative group">
+        <input type="file" id="stlFileInput" accept=".stl" class="hidden" />
+        <div class="flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div class="flex items-center gap-4 text-center sm:text-left">
+            <div class="w-12 h-12 rounded-xl brand-soft-bg flex items-center justify-center shrink-0 mx-auto sm:mx-0">
+              <svg class="w-6 h-6 brand-text" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
+            </div>
+            <div>
+              <p class="font-semibold text-white text-sm sm:text-base" id="fileNameDisplay">STL-Datei hier ablegen oder auswählen</p>
+              <p class="text-xs text-slate-400 mt-0.5">Binary & ASCII .stl • 100 % lokale Browser-Analyse (keine Datenweitergabe)</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            <button type="button" onclick="event.stopPropagation(); loadSamplePart();" class="text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3 py-2 rounded-lg transition">
+              Demo-Bauteil
+            </button>
+            <button type="button" onclick="event.stopPropagation(); document.getElementById('stlFileInput').click();" class="text-xs font-semibold brand-bg text-white px-3.5 py-2 rounded-lg transition shadow">
+              Datei wählen
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Warnbanner (Bauraum / Einheiten) -->
+      <div id="geometryAlert" class="hidden rounded-xl p-3.5 text-xs flex items-start justify-between gap-3 border">
+        <div class="flex items-start gap-2.5">
+          <svg class="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+          <span id="geometryAlertText"></span>
+        </div>
+        <button id="convertInchBtn" onclick="toggleInchConversion()" class="hidden shrink-0 font-semibold underline">
+          Als Inch (× 25,4) interpretieren
+        </button>
+      </div>
+
+      <!-- Interaktiver 3D Viewport -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden flex flex-col shadow-xl">
+        <div class="px-4 py-2.5 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 bg-slate-900/90">
+          <div class="flex items-center gap-2 text-xs text-slate-400">
+            <span class="font-medium text-slate-200">3D-Druckbett-Vorschau</span>
+            <span>•</span>
+            <span>Links: Drehen | Rechts: Verschieben | Rad: Zoom</span>
+          </div>
+          <div class="flex items-center gap-1.5">
+            <button onclick="toggleWireframe()" id="btnWireframe" class="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition">
+              Gitter
+            </button>
+            <button onclick="toggleBBox()" id="btnBBox" class="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition">
+              Maßbox
+            </button>
+            <button onclick="resetCamera()" class="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition">
+              Zentrieren
+            </button>
+          </div>
+        </div>
+
+        <div id="viewerContainer" class="relative w-full h-[360px] sm:h-[420px] bg-gradient-to-b from-slate-950 to-slate-900">
+          <div id="emptyViewerOverlay" class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none text-center p-6">
+            <div class="w-14 h-14 rounded-2xl bg-slate-800/80 border border-slate-700 flex items-center justify-center mb-3 text-slate-400">
+              <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+            </div>
+            <p class="text-sm font-medium text-slate-300">Noch keine STL-Datei geladen</p>
+            <p class="text-xs text-slate-500 mt-1 max-w-xs">Ziehen Sie eine .stl-Datei in das Feld oben oder klicken Sie auf „Demo-Bauteil“.</p>
+          </div>
+        </div>
+
+        <!-- Geometrie-Kennzahlen -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-slate-800 border-t border-slate-800 bg-slate-900/80">
+          <div class="p-3.5">
+            <p class="text-[11px] uppercase tracking-wider text-slate-400">Abmessungen (X×Y×Z)</p>
+            <p id="statDimensions" class="text-sm font-semibold text-white mt-0.5">– × – × – mm</p>
+          </div>
+          <div class="p-3.5">
+            <p class="text-[11px] uppercase tracking-wider text-slate-400">Bauteilvolumen</p>
+            <p id="statVolume" class="text-sm font-semibold text-white mt-0.5">– cm³</p>
+          </div>
+          <div class="p-3.5">
+            <p class="text-[11px] uppercase tracking-wider text-slate-400">Netto-Gewicht (est.)</p>
+            <p id="statWeight" class="text-sm font-semibold text-white mt-0.5">– g</p>
+          </div>
+          <div class="p-3.5">
+            <p class="text-[11px] uppercase tracking-wider text-slate-400">Druckzeit (est.)</p>
+            <p id="statPrintTime" class="text-sm font-semibold text-white mt-0.5">– Std.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RECHTE SPALTE: DRUCKPARAMETER & PREISKALKULATION -->
+    <div class="lg:col-span-5 flex flex-col gap-5">
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col gap-5 shadow-xl">
+        <div class="flex items-center justify-between border-b border-slate-800 pb-3.5">
+          <h2 class="font-bold text-base text-white">1. Fertigungsparameter</h2>
+          <span id="triangleBadge" class="text-xs text-slate-400 bg-slate-800 px-2.5 py-1 rounded-md">Bereit</span>
+        </div>
+
+        <!-- Material -->
+        <div>
+          <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Werkstoff</label>
+          <div id="materialGrid" class="grid grid-cols-1 sm:grid-cols-2 gap-2.5"></div>
+        </div>
+
+        <!-- Farbe -->
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <label class="text-xs font-semibold uppercase tracking-wider text-slate-400">Filamentfarbe</label>
+            <span id="selectedColorName" class="text-xs font-medium text-slate-300">Tiefschwarz</span>
+          </div>
+          <div id="colorSwatches" class="flex flex-wrap gap-2.5"></div>
+        </div>
+
+        <!-- Schichthöhe / Auflösung -->
+        <div>
+          <label for="qualitySelect" class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Auflösung / Schichthöhe</label>
+          <select id="qualitySelect" onchange="recalculate()" class="w-full bg-slate-800 border border-slate-700 text-white text-sm rounded-xl px-3.5 py-2.5 focus:outline-none focus:border-blue-500">
+          </select>
+        </div>
+
+        <!-- Infill & Stützstrukturen -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <div class="flex items-center justify-between mb-1.5">
+              <label for="infillRange" class="text-xs font-semibold uppercase tracking-wider text-slate-400">Füllung (Infill)</label>
+              <span id="infillValueLabel" class="text-xs font-bold brand-text">20 %</span>
+            </div>
+            <input id="infillRange" type="range" min="10" max="100" step="5" value="20" oninput="onInfillChange(this.value)" class="w-full cursor-pointer" />
+            <div class="flex justify-between text-[10px] text-slate-500 mt-1">
+              <span>10 % Leicht</span>
+              <span>50 % Stabil</span>
+              <span>100 % Massiv</span>
+            </div>
+          </div>
+
+          <div>
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Stützstruktur</span>
+              <span id="supportHintBadge" class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">Auto-Check</span>
+            </div>
+            <label class="flex items-center justify-between bg-slate-800 border border-slate-700 rounded-xl px-3.5 py-2 cursor-pointer">
+              <span class="text-xs text-slate-200">Support aktivieren</span>
+              <input id="supportToggle" type="checkbox" onchange="recalculate()" class="w-4 h-4 rounded accent-blue-600" />
+            </label>
+          </div>
+        </div>
+
+        <!-- Stückzahl & Netto/Brutto -->
+        <div class="grid grid-cols-2 gap-4 pt-1">
+          <div>
+            <label for="quantityInput" class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Stückzahl</label>
+            <div class="flex items-center bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
+              <button type="button" onclick="adjustQuantity(-1)" class="px-3 py-2 text-slate-300 hover:bg-slate-700 font-bold">−</button>
+              <input id="quantityInput" type="number" min="1" max="5000" value="1" oninput="recalculate()" class="w-full bg-transparent text-center text-sm font-bold text-white focus:outline-none" />
+              <button type="button" onclick="adjustQuantity(1)" class="px-3 py-2 text-slate-300 hover:bg-slate-700 font-bold">+</button>
+            </div>
+            <p id="discountBadge" class="text-[11px] text-emerald-400 mt-1">Einzelfertigung</p>
+          </div>
+
+          <div>
+            <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Preisanzeige</label>
+            <div class="grid grid-cols-2 bg-slate-800 border border-slate-700 rounded-xl p-1 text-xs font-semibold">
+              <button type="button" id="btnNetto" onclick="setVatMode(false)" class="py-1.5 rounded-lg brand-bg text-white transition">Netto (B2B)</button>
+              <button type="button" id="btnBrutto" onclick="setVatMode(true)" class="py-1.5 rounded-lg text-slate-400 hover:text-white transition">Brutto</button>
+            </div>
+            <p id="vatHintText" class="text-[11px] text-slate-500 mt-1">zzgl. 19 % MwSt.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- PREIS-BOX & ANGEBOT ANFORDERN -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="font-bold text-base text-white">2. Sofort-Kalkulation</h2>
+          <span class="text-xs text-slate-400">Unverbindlicher Richtpreis</span>
+        </div>
+
+        <div class="space-y-2 text-xs text-slate-300 border-b border-slate-800 pb-3.5">
+          <div class="flex justify-between">
+            <span class="text-slate-400">Material & Maschinenzeit (<span id="breakdownQty">1</span>×)</span>
+            <span id="priceProduction">0,00 €</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-slate-400">Rüst- & Slicingpauschale (einmalig)</span>
+            <span id="priceSetup">0,00 €</span>
+          </div>
+          <div id="discountRow" class="hidden flex justify-between text-emerald-400">
+            <span>Mengenrabatt</span>
+            <span id="priceDiscount">−0,00 €</span>
+          </div>
+        </div>
+
+        <div class="flex items-end justify-between pt-3.5 pb-4">
+          <div>
+            <p class="text-xs text-slate-400">Stückpreis: <strong id="unitPriceDisplay" class="text-slate-200">0,00 €</strong></p>
+            <p id="totalTaxLabel" class="text-[11px] text-slate-500 mt-0.5">Gesamtbetrag netto</p>
+          </div>
+          <div class="text-right">
+            <p id="totalPriceDisplay" class="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">0,00 €</p>
+          </div>
+        </div>
+
+        <button onclick="openQuoteModal()" id="requestQuoteBtn" class="w-full brand-bg text-white font-semibold py-3.5 px-4 rounded-xl shadow-lg transition flex items-center justify-center gap-2 text-sm">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+          <span>Verbindliches Angebot mit dieser Konfiguration anfragen</span>
+        </button>
+      </div>
+    </div>
+  </main>
+
+  <!-- FOOTER -->
+  <footer class="border-t border-slate-800/80 bg-slate-950/60 mt-8">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-slate-500">
+      <div class="flex items-center gap-4">
+        <span id="footerShopCopy">© 2026 Muster 3D-Drucktechnik</span>
+        <button onclick="openLegalModal()" class="hover:text-slate-300 underline">Impressum & Datenschutz</button>
+      </div>
+      <div id="poweredByBadge">
+        Kalkulator-Engine: <span class="text-slate-300 font-semibold">SliceQuote</span>
+      </div>
+    </div>
+  </footer>
+
+  <!-- MODAL 1: ANGEBOT ANFRAGEN -->
+  <div id="quoteModal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
+        <h3 class="font-bold text-lg text-white">Angebotsanfrage absenden</h3>
+        <button onclick="closeModal('quoteModal')" class="text-slate-400 hover:text-white text-xl leading-none">&times;</button>
+      </div>
+
+      <div id="quoteSummaryBox" class="bg-slate-800/70 border border-slate-700 rounded-xl p-3 text-xs text-slate-300 space-y-1 mb-4"></div>
+
+      <form id="quoteForm" onsubmit="submitQuoteRequest(event)" class="space-y-3">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">Ihr Name *</label>
+            <input type="text" id="custName" required placeholder="Max Mustermann" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500" />
+          </div>
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">Firma (optional)</label>
+            <input type="text" id="custCompany" placeholder="Muster GmbH" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500" />
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">E-Mail-Adresse für Rückfragen *</label>
+          <input type="email" id="custEmail" required placeholder="einkauf@firma.de" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500" />
+        </div>
+
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">Bemerkungen / Liefertermin</label>
+          <textarea id="custNotes" rows="2" placeholder="z. B. gewünschter Liefertermin, Toleranzanforderungen..." class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"></textarea>
+        </div>
+
+        <p class="text-[11px] text-slate-400">
+          Hinweis: Bitte fügen Sie Ihre STL-Datei im nächsten Schritt direkt Ihrer E-Mail bei (alle technischen Parameter wurden bereits übernommen).
+        </p>
+
+        <div class="flex items-center justify-end gap-2 pt-2">
+          <button type="button" onclick="closeModal('quoteModal')" class="px-4 py-2 rounded-lg text-xs font-medium bg-slate-800 text-slate-300 hover:bg-slate-700">Abbrechen</button>
+          <button type="submit" id="submitQuoteBtn" class="px-4 py-2 rounded-lg text-xs font-semibold brand-bg text-white shadow">Anfrage vorbereiten & senden</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL 2: SHOP-DEMO KONFIGURATOR (Für B2B-Outreach & Einbettung) -->
+  <div id="demoModal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl max-h-[90vh] overflow-y-auto custom-scrollbar">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
+        <div>
+          <h3 class="font-bold text-lg text-white">Shop-Branding & Demo-Link</h3>
+          <p class="text-xs text-slate-400">Erstelle in Sekunden eine personalisierte Live-Vorschau für einen 3D-Druck-Shop.</p>
+        </div>
+        <button onclick="closeModal('demoModal')" class="text-slate-400 hover:text-white text-xl leading-none">&times;</button>
+      </div>
+
+      <div class="space-y-3.5 text-xs">
+        <div>
+          <label class="block text-slate-400 mb-1">Shop- / Firmenname</label>
+          <input type="text" id="demoShopName" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white" />
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-slate-400 mb-1">Markenfarbe (Hex)</label>
+            <div class="flex items-center gap-2">
+              <input type="color" id="demoColorPicker" oninput="document.getElementById('demoColorHex').value = this.value" class="h-9 w-12 rounded bg-slate-800 border border-slate-700 cursor-pointer" />
+              <input type="text" id="demoColorHex" oninput="document.getElementById('demoColorPicker').value = this.value" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-2 text-sm text-white font-mono" />
+            </div>
+          </div>
+          <div>
+            <label class="block text-slate-400 mb-1">Anfrage-E-Mail</label>
+            <input type="email" id="demoShopEmail" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white" />
+          </div>
+        </div>
+
+        <label class="flex items-center justify-between bg-slate-800 border border-slate-700 rounded-lg px-3 py-2.5 cursor-pointer">
+          <div>
+            <span class="font-semibold text-white block">Pro-Tarif (White-Label)</span>
+            <span class="text-[11px] text-slate-400">Entfernt „Powered by SliceQuote“ im Footer</span>
+          </div>
+          <input type="checkbox" id="demoProMode" class="w-4 h-4 accent-blue-600" />
+        </label>
+
+        <div class="pt-2 flex flex-wrap gap-2">
+          <button type="button" onclick="applyDemoSettings()" class="flex-1 brand-bg text-white font-semibold py-2.5 px-3 rounded-lg">Vorschau anwenden</button>
+          <button type="button" onclick="copyShareableDemoUrl()" class="flex-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white font-semibold py-2.5 px-3 rounded-lg">Demo-Link kopieren</button>
+        </div>
+
+        <div class="pt-2 border-t border-slate-800">
+          <label class="block text-slate-400 mb-1">iframe-Code für die Website des Kunden:</label>
+          <textarea id="iframeSnippetBox" readonly rows="2" class="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 font-mono text-[11px] text-slate-300"></textarea>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 3: IMPRESSUM & DATENSCHUTZ -->
+  <div id="legalModal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl text-xs text-slate-300 space-y-3">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h3 class="font-bold text-base text-white">Impressum & Datenschutz</h3>
+        <button onclick="closeModal('legalModal')" class="text-slate-400 hover:text-white text-xl leading-none">&times;</button>
+      </div>
+      <div id="legalContentBox" class="space-y-2 leading-relaxed"></div>
+    </div>
+  </div>
+
+  <!-- TOAST -->
+  <div id="toast" class="fixed bottom-5 right-5 bg-slate-800 border border-slate-700 text-white text-xs font-medium px-4 py-3 rounded-xl shadow-2xl transform translate-y-20 opacity-0 transition-all duration-300 z-50"></div>
+
+  <script>
+    /**
+     * =========================================================================
+     * INITIALISIERUNG, STATE & URL-PARAMETER
+     * =========================================================================
+     */
+    const state = {
+      fileName: null,
+      rawPositions: null,
+      rawNormals: null,
+      triangleCount: 0,
+      volumeCm3: 0,
+      dimensionsMm: { x: 0, y: 0, z: 0 },
+      overhangRatio: 0,
+      inchScaleApplied: false,
+      selectedMaterialId: WIDGET_CONFIG.materials[0].id,
+      selectedColorHex: WIDGET_CONFIG.colors[0].hex,
+      selectedColorName: WIDGET_CONFIG.colors[0].name,
+      includeVat: false,
+      wireframe: false,
+      showBBox: false,
+      lastQuote: null
+    };
+
+    function applyUrlOverrides() {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("shop")) {
+        WIDGET_CONFIG.shopName = params.get("shop");
+        WIDGET_CONFIG.legal.company = params.get("shop");
+      }
+      if (params.get("color")) {
+        const c = params.get("color");
+        WIDGET_CONFIG.accentColor = c.startsWith("#") ? c : `#${c}`;
+      }
+      if (params.get("email")) {
+        WIDGET_CONFIG.contactEmail = params.get("email");
+        WIDGET_CONFIG.legal.email = params.get("email");
+      }
+      if (params.get("pro") === "1") {
+        WIDGET_CONFIG.proMode = true;
+      }
+    }
+
+    function applyBranding() {
+      const hex = WIDGET_CONFIG.accentColor;
+      document.documentElement.style.setProperty("--brand", hex);
+      document.documentElement.style.setProperty("--brand-hover", hex);
+      document.documentElement.style.setProperty("--brand-soft", hexToRgba(hex, 0.14));
+
+      document.getElementById("headerShopName").textContent = WIDGET_CONFIG.shopName;
+      document.getElementById("headerTagline").textContent = WIDGET_CONFIG.tagline;
+      document.getElementById("footerShopCopy").textContent = `© ${new Date().getFullYear()} ${WIDGET_CONFIG.shopName}`;
+      document.getElementById("buildVolumeBadge").textContent =
+        `Bauraum: ${WIDGET_CONFIG.buildVolume.x} × ${WIDGET_CONFIG.buildVolume.y} × ${WIDGET_CONFIG.buildVolume.z} mm`;
+
+      const initials = WIDGET_CONFIG.shopName
+        .split(" ")
+        .map(w => w[0])
+        .join("")
+        .substring(0, 2)
+        .toUpperCase() || "3D";
+      document.getElementById("shopLogoBadge").textContent = initials;
+
+      const poweredBadge = document.getElementById("poweredByBadge");
+      poweredBadge.style.display = WIDGET_CONFIG.proMode ? "none" : "block";
+
+      document.getElementById("legalContentBox").innerHTML = `
+        <p class="font-semibold text-white">Angaben gemäß § 5 DDG:</p>
+        <p>${WIDGET_CONFIG.legal.company}<br>${WIDGET_CONFIG.legal.owner}<br>${WIDGET_CONFIG.legal.street}<br>${WIDGET_CONFIG.legal.city}</p>
+        <p><strong class="text-white">Kontakt:</strong> ${WIDGET_CONFIG.legal.email}</p>
+        <p class="font-semibold text-white pt-2">Datenschutz-Hinweis zur STL-Analyse:</p>
+        <p>Hochgeladene 3D-Modelle (.stl) werden ausschließlich lokal im Arbeitsspeicher Ihres Browsers verarbeitet, um Volumen, Abmessungen und einen unverbindlichen Richtpreis zu ermitteln. Es findet kein automatischer Upload Ihrer CAD-Daten auf externe Server statt.</p>
+      `;
+    }
+
+    function hexToRgba(hex, alpha) {
+      const clean = hex.replace("#", "");
+      if (clean.length !== 6) return `rgba(37, 99, 235, ${alpha})`;
+      const r = parseInt(clean.substring(0, 2), 16);
+      const g = parseInt(clean.substring(2, 4), 16);
+      const b = parseInt(clean.substring(4, 6), 16);
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+
+    function renderControls() {
+      // Materialien
+      const matGrid = document.getElementById("materialGrid");
+      matGrid.innerHTML = WIDGET_CONFIG.materials.map(m => {
+        const active = m.id === state.selectedMaterialId;
+        return `
+          <button type="button" onclick="selectMaterial('${m.id}')"
+            class="text-left p-3 rounded-xl border transition ${active ? "brand-border brand-soft-bg" : "border-slate-800 bg-slate-800/50 hover:border-slate-700"}">
+            <div class="flex items-center justify-between">
+              <span class="font-semibold text-xs text-white">${m.name}</span>
+              <span class="text-[11px] font-mono text-slate-400">${m.pricePerKg.toFixed(0)} €/kg</span>
+            </div>
+            <p class="text-[11px] text-slate-400 mt-1 line-clamp-1">${m.subtitle}</p>
+          </button>
+        `;
+      }).join("");
+
+      // Farben
+      const swatchBox = document.getElementById("colorSwatches");
+      swatchBox.innerHTML = WIDGET_CONFIG.colors.map(c => {
+        const selected = c.hex === state.selectedColorHex;
+        return `
+          <button type="button" title="${c.name}" onclick="selectColor('${c.hex}', '${c.name}')"
+            class="w-8 h-8 rounded-full border-2 transition transform hover:scale-105 ${selected ? "border-white ring-2 ring-blue-500/60 scale-105" : "border-slate-600"}"
+            style="background-color: ${c.hex};"></button>
+        `;
+      }).join("");
+
+      // Qualitäten
+      const qSelect = document.getElementById("qualitySelect");
+      if (qSelect.options.length === 0) {
+        qSelect.innerHTML = WIDGET_CONFIG.qualities.map(q =>
+          `<option value="${q.id}">${q.label}</option>`
+        ).join("");
+        qSelect.value = "standard";
+      }
+    }
+
+    function selectMaterial(id) {
+      state.selectedMaterialId = id;
+      renderControls();
+      recalculate();
+    }
+
+    function selectColor(hex, name) {
+      state.selectedColorHex = hex;
+      state.selectedColorName = name;
+      document.getElementById("selectedColorName").textContent = name;
+      renderControls();
+      if (mesh) {
+        mesh.material.color.set(hex);
+      }
+    }
+
+    function onInfillChange(val) {
+      document.getElementById("infillValueLabel").textContent = `${val} %`;
+      recalculate();
+    }
+
+    function adjustQuantity(delta) {
+      const input = document.getElementById("quantityInput");
+      const next = Math.max(1, (parseInt(input.value, 10) || 1) + delta);
+      input.value = next;
+      recalculate();
+    }
+
+    function setVatMode(includeVat) {
+      state.includeVat = includeVat;
+      const btnNetto = document.getElementById("btnNetto");
+      const btnBrutto = document.getElementById("btnBrutto");
+      if (includeVat) {
+        btnBrutto.className = "py-1.5 rounded-lg brand-bg text-white transition";
+        btnNetto.className = "py-1.5 rounded-lg text-slate-400 hover:text-white transition";
+        document.getElementById("vatHintText").textContent = "inkl. 19 % MwSt.";
+        document.getElementById("totalTaxLabel").textContent = "Gesamtbetrag brutto";
+      } else {
+        btnNetto.className = "py-1.5 rounded-lg brand-bg text-white transition";
+        btnBrutto.className = "py-1.5 rounded-lg text-slate-400 hover:text-white transition";
+        document.getElementById("vatHintText").textContent = "zzgl. 19 % MwSt.";
+        document.getElementById("totalTaxLabel").textContent = "Gesamtbetrag netto";
+      }
+      recalculate();
+    }
+
+    /**
+     * =========================================================================
+     * THREE.JS 3D-VIEWPORT
+     * =========================================================================
+     */
+    let scene, camera, renderer, controls, mesh, bboxHelper;
+
+    function initThreeViewer() {
+      const container = document.getElementById("viewerContainer");
+      scene = new THREE.Scene();
+
+      camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 5000);
+      camera.position.set(180, 150, 180);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setSize(container.clientWidth, container.clientHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      container.appendChild(renderer.domElement);
+
+      controls = new THREE.OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.07;
+
+      // Beleuchtung
+      const ambient = new THREE.AmbientLight(0xffffff, 0.65);
+      scene.add(ambient);
+
+      const dirLight1 = new THREE.DirectionalLight(0xffffff, 0.75);
+      dirLight1.position.set(150, 250, 180);
+      scene.add(dirLight1);
+
+      const dirLight2 = new THREE.DirectionalLight(0x93c5fd, 0.35);
+      dirLight2.position.set(-150, 100, -150);
+      scene.add(dirLight2);
+
+      // Druckbett-Raster passend zum Bauraum
+      const bedSize = Math.max(WIDGET_CONFIG.buildVolume.x, WIDGET_CONFIG.buildVolume.y);
+      const grid = new THREE.GridHelper(bedSize, 16, 0x334155, 0x1e293b);
+      scene.add(grid);
+
+      window.addEventListener("resize", () => {
+        if (!container.clientWidth) return;
+        camera.aspect = container.clientWidth / container.clientHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(container.clientWidth, container.clientHeight);
+      });
+
+      function animate() {
+        requestAnimationFrame(animate);
+        controls.update();
+        renderer.render(scene, camera);
+      }
+      animate();
+    }
+
+    function renderGeometryInViewer(positions, normals, scaleFactor = 1) {
+      if (mesh) {
+        scene.remove(mesh);
+        mesh.geometry.dispose();
+        mesh.material.dispose();
+        mesh = null;
+      }
+      if (bboxHelper) {
+        scene.remove(bboxHelper);
+        bboxHelper = null;
+      }
+
+      const geometry = new THREE.BufferGeometry();
+      const scaledPositions = new Float32Array(positions.length);
+      for (let i = 0; i < positions.length; i++) {
+        scaledPositions[i] = positions[i] * scaleFactor;
+      }
+
+      geometry.setAttribute("position", new THREE.BufferAttribute(scaledPositions, 3));
+      geometry.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
+
+      // CAD Z-Up in Three.js Y-Up drehen
+      geometry.rotateX(-Math.PI / 2);
+      geometry.computeBoundingBox();
+
+      const box = geometry.boundingBox;
+      const center = new THREE.Vector3();
+      box.getCenter(center);
+
+      // Auf Druckbett zentrieren (Y = 0)
+      geometry.translate(-center.x, -box.min.y, -center.z);
+      geometry.computeVertexNormals();
+
+      const material = new THREE.MeshStandardMaterial({
+        color: state.selectedColorHex,
+        roughness: 0.42,
+        metalness: 0.08,
+        wireframe: state.wireframe
+      });
+
+      mesh = new THREE.Mesh(geometry, material);
+      scene.add(mesh);
+
+      bboxHelper = new THREE.BoxHelper(mesh, 0x38bdf8);
+      bboxHelper.visible = state.showBBox;
+      scene.add(bboxHelper);
+
+      document.getElementById("emptyViewerOverlay").style.display = "none";
+      resetCamera();
+    }
+
+    function resetCamera() {
+      if (!mesh) return;
+      const box = new THREE.Box3().setFromObject(mesh);
+      const size = new THREE.Vector3();
+      const center = new THREE.Vector3();
+      box.getSize(size);
+      box.getCenter(center);
+
+      const maxDim = Math.max(size.x, size.y, size.z, 40);
+      const dist = maxDim * 1.9;
+      camera.position.set(center.x + dist * 0.85, center.y + dist * 0.7, center.z + dist * 0.85);
+      controls.target.copy(center);
+      controls.update();
+    }
+
+    function toggleWireframe() {
+      state.wireframe = !state.wireframe;
+      document.getElementById("btnWireframe").classList.toggle("brand-bg", state.wireframe);
+      if (mesh) mesh.material.wireframe = state.wireframe;
+    }
+
+    function toggleBBox() {
+      state.showBBox = !state.showBBox;
+      document.getElementById("btnBBox").classList.toggle("brand-bg", state.showBBox);
+      if (bboxHelper) bboxHelper.visible = state.showBBox;
+    }
+
+    /**
+     * =========================================================================
+     * BINARY & ASCII STL-PARSER + VOLUMEN- & ÜBERHANG-ANALYSE
+     * =========================================================================
+     */
+    function parseSTLBuffer(arrayBuffer) {
+      const view = new DataView(arrayBuffer);
+      const isBinary = checkBinarySTL(arrayBuffer, view);
+      return isBinary ? parseBinarySTL(view) : parseAsciiSTL(new TextDecoder().decode(arrayBuffer));
+    }
+
+    function checkBinarySTL(buffer, view) {
+      if (buffer.byteLength < 84) return false;
+      const numTriangles = view.getUint32(80, true);
+      const expectedLength = 84 + numTriangles * 50;
+      return expectedLength === buffer.byteLength;
+    }
+
+    function parseBinarySTL(view) {
+      const numTriangles = view.getUint32(80, true);
+      const positions = new Float32Array(numTriangles * 9);
+      const normals = new Float32Array(numTriangles * 9);
+
+      let offset = 84;
+      for (let i = 0; i < numTriangles; i++) {
+        const nx = view.getFloat32(offset, true);
+        const ny = view.getFloat32(offset + 4, true);
+        const nz = view.getFloat32(offset + 8, true);
+
+        for (let v = 0; v < 3; v++) {
+          const vOffset = offset + 12 + v * 12;
+          const idx = i * 9 + v * 3;
+          positions[idx] = view.getFloat32(vOffset, true);
+          positions[idx + 1] = view.getFloat32(vOffset + 4, true);
+          positions[idx + 2] = view.getFloat32(vOffset + 8, true);
+
+          normals[idx] = nx;
+          normals[idx + 1] = ny;
+          normals[idx + 2] = nz;
+        }
+        offset += 50;
+      }
+      return { positions, normals, triangleCount: numTriangles };
+    }
+
+    function parseAsciiSTL(text) {
+      const posList = [];
+      const normList = [];
+      const facetRegex = /facet\s+normal\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)[\s\S]*?outer\s+loop([\s\S]*?)endloop/gi;
+      const vertexRegex = /vertex\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)/gi;
+
+      let facetMatch;
+      while ((facetMatch = facetRegex.exec(text)) !== null) {
+        const nx = parseFloat(facetMatch[1]) || 0;
+        const ny = parseFloat(facetMatch[2]) || 0;
+        const nz = parseFloat(facetMatch[3]) || 0;
+
+        let vMatch;
+        let count = 0;
+        vertexRegex.lastIndex = 0;
+        while ((vMatch = vertexRegex.exec(facetMatch[4])) !== null && count < 3) {
+          posList.push(parseFloat(vMatch[1]), parseFloat(vMatch[2]), parseFloat(vMatch[3]));
+          normList.push(nx, ny, nz);
+          count++;
+        }
+      }
+      return {
+        positions: new Float32Array(posList),
+        normals: new Float32Array(normList),
+        triangleCount: posList.length / 9
+      };
+    }
+
+    function analyzeMeshData(positions, triangleCount, scaleFactor = 1) {
+      let minX = Infinity, minY = Infinity, minZ = Infinity;
+      let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+      let signedVolumeMm3 = 0;
+      let totalArea = 0;
+      let overhangArea = 0;
+
+      for (let i = 0; i < triangleCount; i++) {
+        const idx = i * 9;
+        const x1 = positions[idx] * scaleFactor;
+        const y1 = positions[idx + 1] * scaleFactor;
+        const z1 = positions[idx + 2] * scaleFactor;
+
+        const x2 = positions[idx + 3] * scaleFactor;
+        const y2 = positions[idx + 4] * scaleFactor;
+        const z2 = positions[idx + 5] * scaleFactor;
+
+        const x3 = positions[idx + 6] * scaleFactor;
+        const y3 = positions[idx + 7] * scaleFactor;
+        const z3 = positions[idx + 8] * scaleFactor;
+
+        minX = Math.min(minX, x1, x2, x3);
+        minY = Math.min(minY, y1, y2, y3);
+        minZ = Math.min(minZ, z1, z2, z3);
+
+        maxX = Math.max(maxX, x1, x2, x3);
+        maxY = Math.max(maxY, y1, y2, y3);
+        maxZ = Math.max(maxZ, z1, z2, z3);
+
+        // Vorzeichenbehaftetes Tetraeder-Volumen
+        const v321 = x3 * y2 * z1;
+        const v231 = x2 * y3 * z1;
+        const v312 = x3 * y1 * z2;
+        const v132 = x1 * y3 * z2;
+        const v213 = x2 * y1 * z3;
+        const v123 = x1 * y2 * z3;
+        signedVolumeMm3 += (1.0 / 6.0) * (-v321 + v231 + v312 - v132 - v213 + v123);
+
+        // Flächen- & Überhang-Check (CAD Z-Achse)
+        const ux = x2 - x1, uy = y2 - y1, uz = z2 - z1;
+        const vx = x3 - x1, vy = y3 - y1, vz = z3 - z1;
+        const cx = uy * vz - uz * vy;
+        const cy = uz * vx - ux * vz;
+        const cz = ux * vy - uy * vx;
+        const area = 0.5 * Math.sqrt(cx * cx + cy * cy + cz * cz);
+        if (area > 0) {
+          totalArea += area;
+          const nz = cz / (2 * area);
+          if (nz < -0.72 && Math.min(z1, z2, z3) > minZ + 0.5) {
+            overhangArea += area;
+          }
+        }
+      }
+
+      return {
+        volumeCm3: Math.abs(signedVolumeMm3) / 1000.0,
+        dimensionsMm: {
+          x: Math.max(0, maxX - minX),
+          y: Math.max(0, maxY - minY),
+          z: Math.max(0, maxZ - minZ)
+        },
+        overhangRatio: totalArea > 0 ? overhangArea / totalArea : 0
+      };
+    }
+
+    function processLoadedSTL(fileName, parsed) {
+      if (!parsed || parsed.triangleCount === 0) {
+        showToast("Fehler: Die STL-Datei enthält keine gültige Geometrie.");
+        return;
+      }
+
+      state.fileName = fileName;
+      state.rawPositions = parsed.positions;
+      state.rawNormals = parsed.normals;
+      state.triangleCount = parsed.triangleCount;
+      state.inchScaleApplied = false;
+
+      document.getElementById("fileNameDisplay").textContent = fileName;
+      document.getElementById("triangleBadge").textContent = `${parsed.triangleCount.toLocaleString("de-DE")} Dreiecke`;
+
+      runGeometryPipeline();
+    }
+
+    function runGeometryPipeline() {
+      const scale = state.inchScaleApplied ? 25.4 : 1.0;
+      const metrics = analyzeMeshData(state.rawPositions, state.triangleCount, scale);
+
+      state.volumeCm3 = metrics.volumeCm3;
+      state.dimensionsMm = metrics.dimensionsMm;
+      state.overhangRatio = metrics.overhangRatio;
+
+      renderGeometryInViewer(state.rawPositions, state.rawNormals, scale);
+
+      // Auto-Support Empfehlung
+      const needsSupport = metrics.overhangRatio > 0.08;
+      document.getElementById("supportToggle").checked = needsSupport;
+      const hintBadge = document.getElementById("supportHintBadge");
+      hintBadge.textContent = needsSupport ? "Empfohlen" : "Nicht nötig";
+      hintBadge.className = needsSupport
+        ? "text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300"
+        : "text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300";
+
+      validateDimensions(metrics.dimensionsMm);
+      recalculate();
+    }
+
+    function validateDimensions(dim) {
+      const alertBox = document.getElementById("geometryAlert");
+      const alertText = document.getElementById("geometryAlertText");
+      const inchBtn = document.getElementById("convertInchBtn");
+      const maxDim = Math.max(dim.x, dim.y, dim.z);
+      const bv = WIDGET_CONFIG.buildVolume;
+
+      if (maxDim < 3.0 && !state.inchScaleApplied) {
+        alertBox.className = "rounded-xl p-3.5 text-xs flex items-start justify-between gap-3 border bg-amber-500/10 border-amber-500/30 text-amber-200";
+        alertText.textContent = `Sehr kleine Bauteilmaße erkannt (${dim.x.toFixed(2)} × ${dim.y.toFixed(2)} × ${dim.z.toFixed(2)} mm). Wurde die Datei eventuell in Inch statt Millimetern exportiert?`;
+        inchBtn.classList.remove("hidden");
+      } else if (dim.x > bv.x || dim.y > bv.y || dim.z > bv.z) {
+        alertBox.className = "rounded-xl p-3.5 text-xs flex items-start justify-between gap-3 border bg-rose-500/10 border-rose-500/30 text-rose-200";
+        alertText.textContent = `Achtung: Das Bauteil überschreitet den Standard-Bauraum (${bv.x} × ${bv.y} × ${bv.z} mm). Wir prüfen im Angebot gerne eine Segmentierung oder Großformat-Fertigung.`;
+        inchBtn.classList.add("hidden");
+      } else {
+        alertBox.className = "hidden";
+        inchBtn.classList.add("hidden");
+      }
+    }
+
+    function toggleInchConversion() {
+      state.inchScaleApplied = !state.inchScaleApplied;
+      runGeometryPipeline();
+      showToast("Einheiten auf Millimeter (× 25,4) skaliert.");
+    }
+
+    /**
+     * =========================================================================
+     * KALKULATIONS-LOGIK
+     * =========================================================================
+     */
+    function recalculate() {
+      const mat = WIDGET_CONFIG.materials.find(m => m.id === state.selectedMaterialId) || WIDGET_CONFIG.materials[0];
+      const qualId = document.getElementById("qualitySelect").value;
+      const qual = WIDGET_CONFIG.qualities.find(q => q.id === qualId) || WIDGET_CONFIG.qualities[1];
+      const infillRatio = (parseInt(document.getElementById("infillRange").value, 10) || 20) / 100;
+      const useSupport = document.getElementById("supportToggle").checked;
+      const qty = Math.max(1, parseInt(document.getElementById("quantityInput").value, 10) || 1);
+
+      // Staffelrabatt ermitteln
+      const tier = WIDGET_CONFIG.quantityDiscounts.find(t => qty >= t.minQty) || { discount: 0, label: "Einzelfertigung" };
+      document.getElementById("discountBadge").textContent = tier.label;
+
+      if (!state.fileName || state.volumeCm3 <= 0) {
+        document.getElementById("statDimensions").textContent = "– × – × – mm";
+        document.getElementById("statVolume").textContent = "– cm³";
+        document.getElementById("statWeight").textContent = "– g";
+        document.getElementById("statPrintTime").textContent = "– Std.";
+        document.getElementById("priceProduction").textContent = formatEur(0);
+        document.getElementById("priceSetup").textContent = formatEur(0);
+        document.getElementById("unitPriceDisplay").textContent = formatEur(0);
+        document.getElementById("totalPriceDisplay").textContent = formatEur(0);
+        return;
+      }
+
+      const d = state.dimensionsMm;
+      document.getElementById("statDimensions").textContent = `${d.x.toFixed(1)} × ${d.y.toFixed(1)} × ${d.z.toFixed(1)} mm`;
+      document.getElementById("statVolume").textContent = `${state.volumeCm3.toFixed(2)} cm³`;
+
+      // Effektives Volumen (Wandanteil + Infill-Kern + Support-Aufschlag)
+      const supportMult = useSupport ? (1 + WIDGET_CONFIG.supportCostFactor) : 1.0;
+      const effectiveVolCm3 = state.volumeCm3 * (WIDGET_CONFIG.wallShare + (1 - WIDGET_CONFIG.wallShare) * infillRatio) * supportMult;
+
+      // Gewicht & Materialkosten
+      const partWeightG = effectiveVolCm3 * mat.density;
+      const billedWeightKg = (partWeightG / 1000) * WIDGET_CONFIG.wasteFactor;
+      const materialCostPerPart = billedWeightKg * mat.pricePerKg;
+
+      // Druckzeit & Maschinenkosten
+      const effectiveFlow = qual.flowCm3PerHour * mat.speedFactor;
+      const printHoursPerPart = Math.max(0.15, effectiveVolCm3 / effectiveFlow);
+      const machineCostPerPart = printHoursPerPart * WIDGET_CONFIG.machineRatePerHour;
+
+      const baseProductionPerPart = materialCostPerPart + machineCostPerPart;
+      const grossProductionTotal = baseProductionPerPart * qty;
+      const discountAmount = grossProductionTotal * tier.discount;
+      const netProductionTotal = grossProductionTotal - discountAmount;
+
+      let netTotal = netProductionTotal + WIDGET_CONFIG.setupFee;
+      if (netTotal < WIDGET_CONFIG.minOrderValue) {
+        netTotal = WIDGET_CONFIG.minOrderValue;
+      }
+
+      const taxMult = state.includeVat ? (1 + WIDGET_CONFIG.vatRate) : 1.0;
+      const displayProduction = grossProductionTotal * taxMult;
+      const displaySetup = WIDGET_CONFIG.setupFee * taxMult;
+      const displayDiscount = discountAmount * taxMult;
+      const displayTotal = netTotal * taxMult;
+      const displayUnit = displayTotal / qty;
+
+      document.getElementById("statWeight").textContent = `${partWeightG.toFixed(1)} g`;
+      document.getElementById("statPrintTime").textContent = formatDuration(printHoursPerPart);
+      document.getElementById("breakdownQty").textContent = qty;
+      document.getElementById("priceProduction").textContent = formatEur(displayProduction);
+      document.getElementById("priceSetup").textContent = formatEur(displaySetup);
+
+      const discountRow = document.getElementById("discountRow");
+      if (tier.discount > 0) {
+        discountRow.classList.remove("hidden");
+        document.getElementById("priceDiscount").textContent = `−${formatEur(displayDiscount)}`;
+      } else {
+        discountRow.classList.add("hidden");
+      }
+
+      document.getElementById("unitPriceDisplay").textContent = formatEur(displayUnit);
+      document.getElementById("totalPriceDisplay").textContent = formatEur(displayTotal);
+
+      state.lastQuote = {
+        fileName: state.fileName,
+        dimensions: `${d.x.toFixed(1)} x ${d.y.toFixed(1)} x ${d.z.toFixed(1)} mm`,
+        volume: `${state.volumeCm3.toFixed(2)} cm³`,
+        material: mat.name,
+        color: state.selectedColorName,
+        quality: qual.label,
+        infill: `${Math.round(infillRatio * 100)} %`,
+        support: useSupport ? "Ja" : "Nein",
+        qty,
+        unitPrice: formatEur(displayUnit),
+        totalPrice: formatEur(displayTotal),
+        taxMode: state.includeVat ? "brutto (inkl. 19 % MwSt.)" : "netto (zzgl. 19 % MwSt.)"
+      };
+    }
+
+    function formatEur(val) {
+      return val.toLocaleString("de-DE", { style: "currency", currency: "EUR" });
+    }
+
+    function formatDuration(hours) {
+      const totalMins = Math.round(hours * 60);
+      const h = Math.floor(totalMins / 60);
+      const m = totalMins % 60;
+      return h > 0 ? `${h} Std. ${m} Min.` : `${m} Min.`;
+    }
+
+    /**
+     * =========================================================================
+     * DEMO-BAUTEIL GENERATOR (Erzeugt einen echten 3D-L-Winkel direkt im Browser)
+     * =========================================================================
+     */
+    function loadSamplePart() {
+      const shape = new THREE.Shape();
+      // L-Profil in mm (65 x 48 mm)
+      shape.moveTo(0, 0);
+      shape.lineTo(65, 0);
+      shape.lineTo(65, 10);
+      shape.lineTo(12, 10);
+      shape.lineTo(12, 48);
+      shape.lineTo(0, 48);
+      shape.closePath();
+
+      const extrudeGeo = new THREE.ExtrudeGeometry(shape, {
+        depth: 28,
+        bevelEnabled: true,
+        bevelSegments: 2,
+        steps: 1,
+        bevelSize: 0.8,
+        bevelThickness: 0.8
+      });
+
+      const nonIndexed = extrudeGeo.index ? extrudeGeo.toNonIndexed() : extrudeGeo;
+      nonIndexed.computeVertexNormals();
+
+      const posAttr = nonIndexed.getAttribute("position");
+      const normAttr = nonIndexed.getAttribute("normal");
+
+      processLoadedSTL("Montagewinkel_DIN_Demo.stl", {
+        positions: new Float32Array(posAttr.array),
+        normals: new Float32Array(normAttr.array),
+        triangleCount: posAttr.count / 3
+      });
+      showToast("Demo-Bauteil geladen (65 × 48 × 28 mm).");
+    }
+
+    /**
+     * =========================================================================
+     * MODALS & ANGEBOTS-VERSAND
+     * =========================================================================
+     */
+    function openQuoteModal() {
+      if (!state.lastQuote) {
+        showToast("Bitte laden Sie zuerst eine STL-Datei oder das Demo-Bauteil.");
+        return;
+      }
+      const q = state.lastQuote;
+      document.getElementById("quoteSummaryBox").innerHTML = `
+        <div class="flex justify-between"><span class="text-slate-400">Datei:</span><strong class="text-white">${q.fileName}</strong></div>
+        <div class="flex justify-between"><span class="text-slate-400">Maße / Volumen:</span><span>${q.dimensions} (${q.volume})</span></div>
+        <div class="flex justify-between"><span class="text-slate-400">Werkstoff / Farbe:</span><span>${q.material} – ${q.color}</span></div>
+        <div class="flex justify-between"><span class="text-slate-400">Parameter:</span><span>${q.quality}, ${q.infill} Infill, Support: ${q.support}</span></div>
+        <div class="flex justify-between pt-1 border-t border-slate-700"><span class="text-slate-400">Kalkulation (${q.qty} Stk.):</span><strong class="text-white">${q.totalPrice} ${q.taxMode}</strong></div>
+      `;
+      openModal("quoteModal");
+    }
+
+    async function submitQuoteRequest(e) {
+      e.preventDefault();
+      const q = state.lastQuote;
+      const name = document.getElementById("custName").value.trim();
+      const company = document.getElementById("custCompany").value.trim();
+      const email = document.getElementById("custEmail").value.trim();
+      const notes = document.getElementById("custNotes").value.trim();
+
+      const bodyText = [
+        `Neue 3D-Druck-Angebotsanfrage über ${WIDGET_CONFIG.shopName}`,
+        `--------------------------------------------------`,
+        `Kunde: ${name}${company ? ` (${company})` : ""}`,
+        `E-Mail: ${email}`,
+        ``,
+        `Bauteil: ${q.fileName}`,
+        `Abmessungen: ${q.dimensions}`,
+        `Volumen: ${q.volume}`,
+        `Material & Farbe: ${q.material} (${q.color})`,
+        `Schichthöhe: ${q.quality}`,
+        `Infill: ${q.infill} | Stützstruktur: ${q.support}`,
+        `Stückzahl: ${q.qty} Stk.`,
+        `Kalkulierter Richtpreis: ${q.totalPrice} (${q.taxMode})`,
+        notes ? `\nBemerkungen:\n${notes}` : ""
+      ].join("\n");
+
+      // Option A: Direkter API-Versand über Web3Forms (wenn Key hinterlegt)
+      if (WIDGET_CONFIG.web3formsKey) {
+        const btn = document.getElementById("submitQuoteBtn");
+        btn.disabled = true;
+        btn.textContent = "Wird gesendet...";
+        try {
+          const res = await fetch("https://api.web3forms.com/submit", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              access_key: WIDGET_CONFIG.web3formsKey,
+              subject: `3D-Druck Anfrage: ${q.fileName} (${q.qty}x ${q.material})`,
+              from_name: name,
+              email: email,
+              message: bodyText
+            })
+          });
+          if (res.ok) {
+            closeModal("quoteModal");
+            showToast("Anfrage erfolgreich übermittelt!");
+            return;
+          }
+        } catch (_) {
+          // Fallback auf mailto
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "Anfrage vorbereiten & senden";
+        }
+      }
+
+      // Option B: Zwischenablage + E-Mail-Client öffnen
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(bodyText).catch(() => {});
+      }
+      const subject = encodeURIComponent(`3D-Druck Anfrage: ${q.fileName} (${q.qty}x ${q.material})`);
+      const body = encodeURIComponent(bodyText);
+      window.location.href = `mailto:${WIDGET_CONFIG.contactEmail}?subject=${subject}&body=${body}`;
+      closeModal("quoteModal");
+      showToast("Anfrage-Daten kopiert & E-Mail-Programm geöffnet.");
+    }
+
+    function openDemoModal() {
+      document.getElementById("demoShopName").value = WIDGET_CONFIG.shopName;
+      document.getElementById("demoColorPicker").value = WIDGET_CONFIG.accentColor;
+      document.getElementById("demoColorHex").value = WIDGET_CONFIG.accentColor;
+      document.getElementById("demoShopEmail").value = WIDGET_CONFIG.contactEmail;
+      document.getElementById("demoProMode").checked = WIDGET_CONFIG.proMode;
+      updateIframeSnippet();
+      openModal("demoModal");
+    }
+
+    function buildDemoUrl() {
+      const base = window.location.origin + window.location.pathname;
+      const params = new URLSearchParams();
+      params.set("shop", document.getElementById("demoShopName").value.trim() || WIDGET_CONFIG.shopName);
+      params.set("color", document.getElementById("demoColorHex").value.trim() || WIDGET_CONFIG.accentColor);
+      params.set("email", document.getElementById("demoShopEmail").value.trim() || WIDGET_CONFIG.contactEmail);
+      if (document.getElementById("demoProMode").checked) params.set("pro", "1");
+      return `${base}?${params.toString()}`;
+    }
+
+    function updateIframeSnippet() {
+      const url = buildDemoUrl();
+      document.getElementById("iframeSnippetBox").value =
+        `<iframe src="${url}" width="100%" height="780" style="border:0;border-radius:16px;" loading="lazy"></iframe>`;
+    }
+
+    function applyDemoSettings() {
+      WIDGET_CONFIG.shopName = document.getElementById("demoShopName").value.trim() || WIDGET_CONFIG.shopName;
+      WIDGET_CONFIG.accentColor = document.getElementById("demoColorHex").value.trim() || WIDGET_CONFIG.accentColor;
+      WIDGET_CONFIG.contactEmail = document.getElementById("demoShopEmail").value.trim() || WIDGET_CONFIG.contactEmail;
+      WIDGET_CONFIG.proMode = document.getElementById("demoProMode").checked;
+      applyBranding();
+      renderControls();
+      updateIframeSnippet();
+      closeModal("demoModal");
+      showToast("Shop-Branding live aktualisiert.");
+    }
+
+    function copyShareableDemoUrl() {
+      const url = buildDemoUrl();
+      updateIframeSnippet();
+      navigator.clipboard.writeText(url).then(() => {
+        showToast("Personalisierter Demo-Link in Zwischenablage kopiert!");
+      });
+    }
+
+    function openLegalModal() {
+      openModal("legalModal");
+    }
+
+    function openModal(id) {
+      const el = document.getElementById(id);
+      el.classList.remove("hidden");
+      el.classList.add("flex");
+    }
+
+    function closeModal(id) {
+      const el = document.getElementById(id);
+      el.classList.add("hidden");
+      el.classList.remove("flex");
+    }
+
+    let toastTimer;
+    function showToast(msg) {
+      const toast = document.getElementById("toast");
+      toast.textContent = msg;
+      toast.classList.remove("translate-y-20", "opacity-0");
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        toast.classList.add("translate-y-20", "opacity-0");
+      }, 3200);
+    }
+
+    /**
+     * =========================================================================
+     * DRAG & DROP / FILE INPUT EVENTS
+     * =========================================================================
+     */
+    function initFileHandlers() {
+      const dropZone = document.getElementById("dropZone");
+      const fileInput = document.getElementById("stlFileInput");
+
+      dropZone.addEventListener("click", () => fileInput.click());
+
+      dropZone.addEventListener("dragover", e => {
+        e.preventDefault();
+        dropZone.classList.add("brand-border", "brand-soft-bg");
+      });
+
+      dropZone.addEventListener("dragleave", () => {
+        dropZone.classList.remove("brand-border", "brand-soft-bg");
+      });
+
+      dropZone.addEventListener("drop", e => {
+        e.preventDefault();
+        dropZone.classList.remove("brand-border", "brand-soft-bg");
+        const file = e.dataTransfer.files[0];
+        if (file) handleFileSelection(file);
+      });
+
+      fileInput.addEventListener("change", e => {
+        const file = e.target.files[0];
+        if (file) handleFileSelection(file);
+      });
+    }
+
+    function handleFileSelection(file) {
+      if (!file.name.toLowerCase().endsWith(".stl")) {
+        showToast("Bitte wählen Sie eine gültige .stl-Datei aus.");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = ev => {
+        const parsed = parseSTLBuffer(ev.target.result);
+        processLoadedSTL(file.name, parsed);
+      };
+      reader.readAsArrayBuffer(file);
+    }
+
+    // App starten
+    window.addEventListener("DOMContentLoaded", () => {
+      applyUrlOverrides();
+      applyBranding();
+      renderControls();
+      initThreeViewer();
+      initFileHandlers();
+      recalculate();
+    });
+  </script>
+</body>
+</html>
